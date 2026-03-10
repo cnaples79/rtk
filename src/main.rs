@@ -958,6 +958,35 @@ const RTK_META_COMMANDS: &[&str] = &[
     "verify",
 ];
 
+/// Resolve `rtk proxy` arguments, handling the single-quoted-string case.
+///
+/// When an LLM writes `rtk proxy 'head -50 file.php'`, the shell strips the quotes
+/// and delivers `head -50 file.php` as **one** OsString. We detect this (len == 1 with
+/// spaces) and POSIX-split it with `shlex` so quoted inner arguments like
+/// `grep -r "pattern with spaces" .` are handled correctly.
+///
+/// Falls back to the raw single token when:
+/// - `shlex` cannot parse (e.g. unmatched quotes)
+/// - splitting yields an empty token list (e.g. all-whitespace input)
+/// - the single argument is a path that genuinely contains spaces (ambiguous: we cannot
+///   distinguish `/Applications/My App` from `My App arg1`; in that case, pass the
+///   command as multiple args: `rtk proxy /Applications/My\ App arg1`)
+fn resolve_proxy_args(args: &[std::ffi::OsString]) -> Vec<String> {
+    if args.len() == 1 {
+        let single = args[0].to_string_lossy();
+        if single.contains(' ') {
+            if let Some(tokens) = shlex::split(&single) {
+                if !tokens.is_empty() {
+                    return tokens;
+                }
+            }
+        }
+    }
+    args.iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect()
+}
+
 fn run_fallback(parse_error: clap::Error) -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -1857,17 +1886,15 @@ fn main() -> Result<()> {
 
             let timer = tracking::TimedExecution::start();
 
-            let cmd_name = args[0].to_string_lossy();
-            let cmd_args: Vec<String> = args[1..]
-                .iter()
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect();
+            let mut effective_args = resolve_proxy_args(&args).into_iter();
+            let cmd_name = effective_args.next().expect("args non-empty checked above");
+            let cmd_args: Vec<String> = effective_args.collect();
 
             if cli.verbose > 0 {
                 eprintln!("Proxy mode: {} {}", cmd_name, cmd_args.join(" "));
             }
 
-            let mut child = Command::new(cmd_name.as_ref())
+            let mut child = Command::new(&cmd_name)
                 .args(&cmd_args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -2265,5 +2292,70 @@ mod tests {
                 args
             );
         }
+    }
+
+    // ── resolve_proxy_args ────────────────────────────────────────────────────
+
+    fn os(s: &str) -> std::ffi::OsString {
+        std::ffi::OsString::from(s)
+    }
+
+    #[test]
+    fn test_proxy_single_quoted_arg_is_split() {
+        // Simulates: rtk proxy 'head -50 app/Models/Domaine.php'
+        // Shell strips quotes → one arg "head -50 app/Models/Domaine.php"
+        let args = vec![os("head -50 app/Models/Domaine.php")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["head", "-50", "app/Models/Domaine.php"]);
+    }
+
+    #[test]
+    fn test_proxy_normal_multi_args_unchanged() {
+        // rtk proxy head -50 app/Models/Domaine.php → 3 separate args, no splitting
+        let args = vec![os("head"), os("-50"), os("app/Models/Domaine.php")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["head", "-50", "app/Models/Domaine.php"]);
+    }
+
+    #[test]
+    fn test_proxy_single_arg_without_spaces_unchanged() {
+        // rtk proxy echo → single arg with no spaces, leave it alone
+        let args = vec![os("echo")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["echo"]);
+    }
+
+    #[test]
+    fn test_proxy_complex_single_quoted_command() {
+        // rtk proxy 'git log --oneline -10'
+        let args = vec![os("git log --oneline -10")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["git", "log", "--oneline", "-10"]);
+    }
+
+    #[test]
+    fn test_proxy_inner_quoted_argument() {
+        // rtk proxy 'grep -r "pattern with spaces" .'
+        // shell delivers: grep -r "pattern with spaces" .
+        let args = vec![os(r#"grep -r "pattern with spaces" ."#)];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["grep", "-r", "pattern with spaces", "."]);
+    }
+
+    #[test]
+    fn test_proxy_unmatched_quote_fallback() {
+        // shlex returns None on unmatched quotes → fall back to raw single token
+        let args = vec![os("echo \"unterminated")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["echo \"unterminated"]);
+    }
+
+    #[test]
+    fn test_proxy_whitespace_only_arg_fallback() {
+        // shlex splits "   " into Ok([]) — empty token list falls back to raw single token
+        // (prevents a panic at the call-site expect())
+        let args = vec![os("   ")];
+        let result = resolve_proxy_args(&args);
+        assert_eq!(result, vec!["   "]);
     }
 }

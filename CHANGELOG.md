@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes
 
 * add tokens_saved to telemetry payload ([#471](https://github.com/rtk-ai/rtk/issues/471)) ([#472](https://github.com/rtk-ai/rtk/issues/472)) ([f8b7d52](https://github.com/rtk-ai/rtk/commit/f8b7d52d2d25d09a44f391576bad6a7b271f1f8c))
+* **proxy:** handle single-quoted command string (shell collapses quotes into one arg) ([#388](https://github.com/rtk-ai/rtk/issues/388))
 
 ## [0.28.1](https://github.com/rtk-ai/rtk/compare/v0.28.0...v0.28.1) (2026-03-10)
 
