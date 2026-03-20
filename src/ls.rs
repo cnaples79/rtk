@@ -49,7 +49,28 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
         .map(|s| s.as_str())
         .collect();
 
-    // Build ls -la + any extra flags the user passed (e.g. -R)
+    // Build baseline command (what the user would have run: plain `ls` + their flags)
+    let mut baseline_cmd = resolved_command("ls");
+    for flag in &flags {
+        baseline_cmd.arg(flag);
+    }
+    if paths.is_empty() {
+        baseline_cmd.arg(".");
+    } else {
+        for p in &paths {
+            baseline_cmd.arg(p);
+        }
+    }
+
+    let baseline_output = baseline_cmd.output().context("Failed to run ls")?;
+    if !baseline_output.status.success() {
+        let stderr = String::from_utf8_lossy(&baseline_output.stderr);
+        eprint!("{}", stderr);
+        std::process::exit(baseline_output.status.code().unwrap_or(1));
+    }
+    let baseline_raw = String::from_utf8_lossy(&baseline_output.stdout).to_string();
+
+    // Build enriched command used for compact display (`ls -la` + extra flags)
     // Strip -l, -a, -h (we handle all of these ourselves)
     let mut cmd = resolved_command("ls");
     cmd.arg("-la");
@@ -109,11 +130,18 @@ pub fn run(args: &[String], verbose: u8) -> Result<()> {
     } else {
         paths.join(" ")
     };
+    let mut baseline_cmd_display = String::from("ls");
+    if !flags.is_empty() {
+        baseline_cmd_display.push(' ');
+        baseline_cmd_display.push_str(&flags.join(" "));
+    }
+    baseline_cmd_display.push(' ');
+    baseline_cmd_display.push_str(&target_display);
     print!("{}", filtered);
     timer.track(
-        &format!("ls -la {}", target_display),
+        baseline_cmd_display.trim(),
         "rtk ls",
-        &raw,
+        &baseline_raw,
         &filtered,
     );
 
